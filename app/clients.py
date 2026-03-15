@@ -15,11 +15,16 @@ class BirdeyeClient:
         import httpx
 
         headers = {"X-API-KEY": self.api_key, "x-chain": "solana"}
-        async with httpx.AsyncClient(timeout=10) as client:
-            price_resp = await client.get(f"{self.base}/defi/price", headers=headers, params={"address": mint})
-            overview_resp = await client.get(
-                f"{self.base}/defi/token_overview", headers=headers, params={"address": mint}
-            )
+        timeout = httpx.Timeout(timeout=6.0, connect=2.0)
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                price_resp = await client.get(f"{self.base}/defi/price", headers=headers, params={"address": mint})
+                overview_resp = await client.get(
+                    f"{self.base}/defi/token_overview", headers=headers, params={"address": mint}
+                )
+        except httpx.HTTPError:
+            return {}
+
         price_data = price_resp.json().get("data", {}) if price_resp.status_code == 200 else {}
         overview_data = overview_resp.json().get("data", {}) if overview_resp.status_code == 200 else {}
         holders, holders_path = self._extract_holders_from_overview(overview_data)
@@ -35,7 +40,6 @@ class BirdeyeClient:
 
     @classmethod
     def _extract_holders_from_overview(cls, overview_data: dict[str, Any]) -> tuple[int | None, str | None]:
-        # NOTE: avoid singular "holder" which may not represent total holder count.
         key_candidates = {"holders", "holdercount", "holderscount", "uniqueholders"}
 
         def walk(node: Any, path: str) -> tuple[int | None, str | None]:
@@ -80,38 +84,42 @@ class HeliusClient:
         url = f"https://mainnet.helius-rpc.com/?api-key={self.api_key}"
         owners: set[str] = set()
         page = 1
-        max_pages = 20
+        max_pages = int(os.getenv("HELIUS_MAX_PAGES", "5"))
         total_accounts = 0
-        async with httpx.AsyncClient(timeout=10) as client:
-            while page <= max_pages:
-                payload = {
-                    "jsonrpc": "2.0",
-                    "id": f"holders-{page}",
-                    "method": "getTokenAccounts",
-                    "params": {
-                        "page": page,
-                        "limit": 1000,
-                        "mint": mint,
-                        "displayOptions": {"showZeroBalance": False},
-                    },
-                }
-                resp = await client.post(url, json=payload)
-                if resp.status_code != 200:
-                    break
+        timeout = httpx.Timeout(timeout=6.0, connect=2.0)
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                while page <= max_pages:
+                    payload = {
+                        "jsonrpc": "2.0",
+                        "id": f"holders-{page}",
+                        "method": "getTokenAccounts",
+                        "params": {
+                            "page": page,
+                            "limit": 1000,
+                            "mint": mint,
+                            "displayOptions": {"showZeroBalance": False},
+                        },
+                    }
+                    resp = await client.post(url, json=payload)
+                    if resp.status_code != 200:
+                        break
 
-                token_accounts, has_more = self._extract_page_accounts(resp.json())
-                if not token_accounts:
-                    break
+                    token_accounts, has_more = self._extract_page_accounts(resp.json())
+                    if not token_accounts:
+                        break
 
-                total_accounts += len(token_accounts)
-                for account in token_accounts:
-                    owner = self._extract_owner(account)
-                    if owner:
-                        owners.add(owner)
+                    total_accounts += len(token_accounts)
+                    for account in token_accounts:
+                        owner = self._extract_owner(account)
+                        if owner:
+                            owners.add(owner)
 
-                if not has_more:
-                    break
-                page += 1
+                    if not has_more:
+                        break
+                    page += 1
+        except httpx.HTTPError:
+            pass
 
         stats = {"pages": page, "accounts": total_accounts, "owners": len(owners)}
         return (len(owners) if owners else None), stats
