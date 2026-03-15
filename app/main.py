@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from app.clients import load_clients
-from app.models import Side, TokenProfile, TradeEvent
+from app.models import Side, TokenProfile, TradeEvent, TokenRuntime
 from app.signal_engine import SignalEngine
 from app.state import STATE
 
@@ -49,6 +49,13 @@ async def index() -> FileResponse:
     return FileResponse("static/index.html")
 
 
+def env_flag(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
 async def resolve_holders(mint: str, metrics: dict) -> tuple[int | None, str, dict]:
     birdeye_holders = metrics.get("holders")
     birdeye_path = metrics.get("holders_path")
@@ -68,20 +75,15 @@ async def resolve_holders(mint: str, metrics: dict) -> tuple[int | None, str, di
     if helius_holders is None:
         return birdeye_holders, "birdeye", {"holders_path": birdeye_path, **helius_stats}
 
-    # 两者都存在时取更可信的较大值，并标记混合来源。
+    # 两者都存在时取更可信的较大值。
     if helius_holders > birdeye_holders:
         return helius_holders, "helius_estimated", {"holders_path": birdeye_path, **helius_stats}
     return birdeye_holders, "birdeye", {"holders_path": birdeye_path, **helius_stats}
 
 
-@app.post("/webhook/token")
-async def token_webhook(payload: TokenWebhook) -> dict:
-    token = TokenProfile(mint=payload.mint, symbol=payload.symbol)
-    runtime = STATE.whitelist_token(token)
-
-    metrics = await birdeye.get_token_metrics(payload.mint)
-    holders, source, debug = await resolve_holders(payload.mint, metrics)
-
+async def update_runtime_holders(runtime: TokenRuntime) -> None:
+    metrics = await birdeye.get_token_metrics(runtime.profile.mint)
+    holders, source, debug = await resolve_holders(runtime.profile.mint, metrics)
     runtime.profile.fdv_or_mcap = metrics.get("fdv") or metrics.get("mcap")
     runtime.profile.volume_24h = metrics.get("volume_24h")
     runtime.profile.holders = holders
@@ -91,7 +93,7 @@ async def token_webhook(payload: TokenWebhook) -> dict:
 
     logger.info(
         "[holders] final mint=%s holders=%s source=%s path=%s pages=%s accounts=%s owners=%s",
-        payload.mint,
+        runtime.profile.mint,
         holders,
         source,
         runtime.profile.holders_path,
@@ -100,22 +102,43 @@ async def token_webhook(payload: TokenWebhook) -> dict:
         debug.get("owners"),
     )
 
+
+async def refresh_all_holders() -> int:
+    updated = 0
+    for runtime in STATE.tokens.values():
+        await update_runtime_holders(runtime)
+        updated += 1
+    await STATE.broadcast({"type": "refresh", "count": updated})
+    return updated
+
+
+@app.on_event("startup")
+async def startup_refresh_holders_if_enabled() -> None:
+    if not env_flag("AUTO_REFRESH_HOLDERS_ON_START", default=False):
+        return
+    updated = await refresh_all_holders()
+    logger.info("[holders] startup refresh complete updated=%s", updated)
+
+
+@app.post("/webhook/token")
+async def token_webhook(payload: TokenWebhook) -> dict:
+    token = TokenProfile(mint=payload.mint, symbol=payload.symbol)
+    runtime = STATE.whitelist_token(token)
+
+    await update_runtime_holders(runtime)
+
     await STATE.broadcast({"type": "token", "mint": payload.mint})
-    return {"ok": True, "mint": payload.mint, "holders": holders, "holders_source": source}
+    return {
+        "ok": True,
+        "mint": payload.mint,
+        "holders": runtime.profile.holders,
+        "holders_source": runtime.profile.holders_source,
+    }
 
 
 @app.post("/webhook/refresh-holders")
 async def refresh_holders() -> dict:
-    updated = 0
-    for runtime in STATE.tokens.values():
-        metrics = await birdeye.get_token_metrics(runtime.profile.mint)
-        holders, source, debug = await resolve_holders(runtime.profile.mint, metrics)
-        runtime.profile.holders = holders
-        runtime.profile.holders_source = source
-        runtime.profile.holders_path = debug.get("holders_path")
-        runtime.profile.holders_refreshed_at = datetime.now(timezone.utc)
-        updated += 1
-    await STATE.broadcast({"type": "refresh", "count": updated})
+    updated = await refresh_all_holders()
     return {"ok": True, "updated": updated}
 
 

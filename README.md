@@ -8,6 +8,7 @@
 - `POST /webhook/trade`：接收成交事件，计算 8 大核心信号与组合信号。
 - Holders 优先读取 Birdeye（支持嵌套路径解析），若为缺失/可疑小值（如 1）则回退 Helius `getTokenAccounts` 分页去重 owner 估算。
 - `POST /webhook/refresh-holders`：对白名单做一次强制 holders 刷新。
+- `AUTO_REFRESH_HOLDERS_ON_START=true` 时，服务启动后会自动执行一次 holders 刷新（适合进程重启后回填）。
 - `GET /api/debug/token/{mint}`：查看单币 holders 值、来源与解析路径，便于排查。
 - Dashboard（`/`）：实时显示
   - 白名单：`symbol / FDV or MCAP / holders / holders_source / volume / 合约地址(gmgn可点击)`
@@ -20,6 +21,7 @@
 BIRDEYE_API_KEY=xxx
 HELIUS_API_KEY=xxx
 BOT_WEBHOOK_URL=http://your-bot-server/webhook
+AUTO_REFRESH_HOLDERS_ON_START=false
 ```
 
 ## 运行
