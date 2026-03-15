@@ -51,7 +51,7 @@ async def token_webhook(payload: TokenWebhook) -> dict:
     runtime = STATE.whitelist_token(token)
 
     metrics = await birdeye.get_token_metrics(payload.mint)
-    holders = await helius.get_holder_estimate(payload.mint)
+    holders = metrics.get("holders") or await helius.get_holder_estimate(payload.mint)
 
     runtime.profile.fdv_or_mcap = metrics.get("fdv") or metrics.get("mcap")
     runtime.profile.volume_24h = metrics.get("volume_24h")
