@@ -91,3 +91,17 @@ BIRDEYE_API_KEY=xxx TOKEN_MINT=So11111111111111111111111111111111111111112 node 
 - 使用 WebSocket `SUBSCRIBE_TOKEN_STATS` 监听 token stats。
 - holder 变化或定时触发时，调用 `/defi/v3/token/holder` 拉 top holders 快照。
 - 每 5 分钟调用 `/holder/v1/distribution` 输出筹码分布快照。
+
+
+### Pump Detector / Bundle Wallet Buy 最新定义
+
+- Pump Detector：
+  - `volume_30s >= volume_5m_avg_30s * 3` 或 `volume_5s > 20000 USD`
+  - 最近10笔 `buy_count >= 7` 或 `buy_volume >= sell_volume * 2`
+  - `price_now >= high_last_5m * 1.01`
+  - 三项同时满足才触发。
+- Bundle Wallet Buy：
+  - 10秒窗口内 `is_bundle_wallet` 买单
+  - `unique_wallets >= 3`
+  - 买入金额相近（`max(amount)/min(amount) <= 1.5`）
+- Strong Buy Combo：Bundle / Pump / Smart 三个核心信号命中任意两个即触发。

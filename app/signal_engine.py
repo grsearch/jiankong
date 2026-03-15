@@ -34,11 +34,13 @@ class SignalEngine:
         trade_score = sum(self.WEIGHTS[name] for name, ok in active.items() if ok)
 
         if active["pump_detector"]:
-            signals.append(self._record(runtime, "Pump Detector", trade_score, "10秒>=3钱包买入且量能放大"))
+            signals.append(
+                self._record(runtime, "Pump Detector", trade_score, "30秒量能爆发 + 买盘占优 + 价格突破5分钟高点1%")
+            )
         if active["bundle_buy"]:
-            signals.append(self._record(runtime, "Bundle Wallet Buy", trade_score, "8秒>=4个bundle钱包集中买入"))
+            signals.append(self._record(runtime, "Bundle Wallet Buy", trade_score, "10秒>=3钱包买入且金额接近"))
         if active["smart_money_buy"]:
-            signals.append(self._record(runtime, "Smart Money Buy", trade_score, "ROI>200% 且胜率>60%钱包买入"))
+            signals.append(self._record(runtime, "Smart Money Buy", trade_score, "10秒内>=2个Smart Wallet买入"))
         if active["volume_spike"]:
             signals.append(self._record(runtime, "Volume Spike", trade_score, "当前10秒成交量>最近1分钟均值x4"))
         if active["buy_sell_ratio"]:
@@ -53,9 +55,10 @@ class SignalEngine:
         if self._liquidity_pull(runtime):
             signals.append(self._record(runtime, "Liquidity Pull Risk", trade_score, "流动性相对基线下降>15%"))
 
-        combo_buy = active["pump_detector"] and active["bundle_buy"] and active["volume_spike"]
-        if combo_buy:
-            signals.append(self._record(runtime, "Strong Buy Combo", trade_score, "Pump+BundleBuy+VolumeSpike"))
+        # 最强买入组合：Bundle / Pump / Smart 三者满足任意两个
+        core_buy_hits = [active["bundle_buy"], active["pump_detector"], active["smart_money_buy"]]
+        if sum(1 for ok in core_buy_hits if ok) >= 2:
+            signals.append(self._record(runtime, "Strong Buy Combo", trade_score, "Bundle+Pump+Smart 三选二"))
 
         combo_sell = self._bundle_sell(trades, now) and active["volume_spike"] and self._price_drop(trades, now)
         if combo_sell:
@@ -77,28 +80,57 @@ class SignalEngine:
         return [t for t in trades if t.timestamp >= start]
 
     def _pump_detector(self, trades: list[TradeEvent], now: datetime) -> bool:
-        last_10s = self._window(trades, now, 10)
-        buy_wallets = {t.wallet for t in last_10s if t.side == Side.BUY}
-        current_volume = sum(t.amount_usd for t in last_10s)
-        last_60s = self._window(trades, now, 60)
-        baseline = sum(t.amount_usd for t in last_60s) / 6 if last_60s else 0
-        return len(buy_wallets) >= 3 and baseline > 0 and current_volume > baseline * 3
+        # 条件1：量能爆发 (30s >= 5m_avg*3) 或 (5s成交额>20000)
+        last_30s = self._window(trades, now, 30)
+        volume_30s = sum(t.amount_usd for t in last_30s)
+        last_5m = self._window(trades, now, 300)
+        volume_5m_avg_30s = sum(t.amount_usd for t in last_5m) / 10 if last_5m else 0
+        last_5s = self._window(trades, now, 5)
+        volume_5s = sum(t.amount_usd for t in last_5s)
+        volume_spike = (volume_5m_avg_30s > 0 and volume_30s >= volume_5m_avg_30s * 3) or volume_5s > 20000
+
+        # 条件2：买盘占优 (last10trades buy>=7) 或 (buy_volume>=sell_volume*2)
+        last_10_trades = trades[-10:]
+        buy_count = sum(1 for t in last_10_trades if t.side == Side.BUY)
+        buy_volume = sum(t.amount_usd for t in last_10_trades if t.side == Side.BUY)
+        sell_volume = sum(t.amount_usd for t in last_10_trades if t.side == Side.SELL)
+        buy_dominance = buy_count >= 7 or (sell_volume > 0 and buy_volume >= sell_volume * 2)
+
+        # 条件3：价格突破 (当前价 >= 近5分钟高点*1.01)
+        priced_5m = [t for t in last_5m if t.price is not None]
+        price_breakout = False
+        if len(priced_5m) >= 2:
+            current_price = priced_5m[-1].price
+            high_last_5m = max(t.price for t in priced_5m[:-1])
+            if current_price is not None and high_last_5m is not None and high_last_5m > 0:
+                price_breakout = current_price >= high_last_5m * 1.01
+
+        return volume_spike and buy_dominance and price_breakout
 
     def _bundle_buy(self, trades: list[TradeEvent], now: datetime) -> bool:
-        last_8s = self._window(trades, now, 8)
-        bundle_buys = [t for t in last_8s if t.side == Side.BUY and t.is_bundle_wallet]
-        if len(bundle_buys) < 4:
+        # 10秒内 >=3钱包买入 + 金额接近（最大/最小 <= 1.5）
+        last_10s = self._window(trades, now, 10)
+        buys = [t for t in last_10s if t.side == Side.BUY and t.is_bundle_wallet]
+        if len(buys) < 3:
             return False
-        amounts = [t.amount_usd for t in bundle_buys]
-        avg = sum(amounts) / len(amounts)
-        return all(abs(a - avg) / max(avg, 1) < 0.35 for a in amounts)
+
+        unique_wallets = {t.wallet for t in buys}
+        if len(unique_wallets) < 3:
+            return False
+
+        amounts = [max(t.amount_usd, 0.01) for t in buys]
+        similar_size = max(amounts) / min(amounts) <= 1.5
+        return similar_size
 
     def _smart_money_buy(self, trades: list[TradeEvent], now: datetime) -> bool:
-        last_30s = self._window(trades, now, 30)
-        return any(
-            t.side == Side.BUY and (t.wallet_roi or 0) > 200 and (t.wallet_win_rate or 0) > 60
-            for t in last_30s
-        )
+        # 10秒内 >=2 个 Smart Wallet 买入
+        last_10s = self._window(trades, now, 10)
+        smart_wallets = {
+            t.wallet
+            for t in last_10s
+            if t.side == Side.BUY and (t.wallet_roi or 0) > 200 and (t.wallet_win_rate or 0) > 60
+        }
+        return len(smart_wallets) >= 2
 
     def _volume_spike(self, trades: list[TradeEvent], now: datetime) -> bool:
         last_10s = self._window(trades, now, 10)
