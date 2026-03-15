@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SOL MEME Monitor</title>
+  <style>
+    body{font-family:Arial,sans-serif;background:#0f172a;color:#e2e8f0;margin:0;padding:20px}
+    h1{margin-top:0}
+    .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+    table{width:100%;border-collapse:collapse;background:#111827;border-radius:8px;overflow:hidden}
+    th,td{padding:10px;border-bottom:1px solid #374151;font-size:14px}
+    th{background:#1f2937;text-align:left}
+    a{color:#22d3ee}
+    .badge{padding:2px 6px;border-radius:6px;background:#164e63}
+  </style>
+</head>
+<body>
+  <h1>SOL 链 MEME 监控 Dashboard</h1>
+  <div class="grid">
+    <section>
+      <h2>白名单</h2>
+      <table id="wl"><thead><tr><th>Symbol</th><th>FDV/MCAP</th><th>Holders</th><th>Volume</th><th>合约</th></tr></thead><tbody></tbody></table>
+    </section>
+    <section>
+      <h2>交易信号触发记录</h2>
+      <table id="signals"><thead><tr><th>时间</th><th>币种</th><th>信号</th><th>详情</th><th>Score</th></tr></thead><tbody></tbody></table>
+    </section>
+  </div>
+<script>
+async function load(){
+  const wl=await fetch('/api/whitelist').then(r=>r.json());
+  const sig=await fetch('/api/signals').then(r=>r.json());
+  document.querySelector('#wl tbody').innerHTML=wl.map(t=>`<tr><td>${t.symbol}</td><td>${fmt(t.fdv_or_mcap)}</td><td>${fmt(t.holders)}</td><td>${fmt(t.volume)}</td><td><a target="_blank" href="${t.gmgn}">${short(t.mint)}</a></td></tr>`).join('');
+  document.querySelector('#signals tbody').innerHTML=sig.map(s=>`<tr><td>${new Date(s.created_at).toLocaleTimeString()}</td><td>${s.symbol}</td><td><span class="badge">${s.signal}</span></td><td>${s.detail}</td><td>${s.score}</td></tr>`).join('');
+}
+function fmt(v){return v===null||v===undefined?'-':Number(v).toLocaleString();}
+function short(a){return a.slice(0,6)+'...'+a.slice(-4)}
+load();
+setInterval(load,3000);
+const ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws');
+ws.onmessage=()=>load();
+</script>
+</body>
+</html>
