@@ -1,11 +1,22 @@
 from app.clients import BirdeyeClient, HeliusClient
 
 
-def test_birdeye_extract_holders_supports_multiple_keys():
-    assert BirdeyeClient._extract_holders_from_overview({"holder": 123}) == 123
-    assert BirdeyeClient._extract_holders_from_overview({"holders": "456"}) == 456
-    assert BirdeyeClient._extract_holders_from_overview({"holderCount": 789.0}) == 789
-    assert BirdeyeClient._extract_holders_from_overview({"unknown": 1}) is None
+def test_birdeye_extract_holders_supports_nested_paths():
+    value, path = BirdeyeClient._extract_holders_from_overview({"holders": "456"})
+    assert value == 456
+    assert path == "data.holders"
+
+    nested_value, nested_path = BirdeyeClient._extract_holders_from_overview(
+        {"tokenOverview": {"holderCount": 789.0}}
+    )
+    assert nested_value == 789
+    assert nested_path == "data.tokenOverview.holderCount"
+
+
+def test_birdeye_ignores_ambiguous_holder_field():
+    value, path = BirdeyeClient._extract_holders_from_overview({"holder": 1})
+    assert value is None
+    assert path is None
 
 
 def test_helius_extract_page_accounts_parses_shapes():
@@ -25,3 +36,9 @@ def test_helius_extract_page_accounts_parses_shapes():
     accounts2, has_more2 = HeliusClient._extract_page_accounts(payload_cursor)
     assert len(accounts2) == 1
     assert has_more2 is True
+
+
+def test_helius_extract_owner_compatible_keys():
+    assert HeliusClient._extract_owner({"owner": "abc"}) == "abc"
+    assert HeliusClient._extract_owner({"token_info": {"owner": "def"}}) == "def"
+    assert HeliusClient._extract_owner({"tokenInfo": {"owner": "xyz"}}) == "xyz"

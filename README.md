@@ -6,9 +6,11 @@
 
 - `POST /webhook/token`：接收新代币，加入白名单。
 - `POST /webhook/trade`：接收成交事件，计算 8 大核心信号与组合信号。
-- Holders 优先读取 Birdeye `token_overview`，缺失时回退 Helius `getTokenAccounts` 分页去重 owner 估算。
+- Holders 优先读取 Birdeye（支持嵌套路径解析），若为缺失/可疑小值（如 1）则回退 Helius `getTokenAccounts` 分页去重 owner 估算。
+- `POST /webhook/refresh-holders`：对白名单做一次强制 holders 刷新。
+- `GET /api/debug/token/{mint}`：查看单币 holders 值、来源与解析路径，便于排查。
 - Dashboard（`/`）：实时显示
-  - 白名单：`symbol / FDV or MCAP / holders / volume / 合约地址(gmgn可点击)`
+  - 白名单：`symbol / FDV or MCAP / holders / holders_source / volume / 合约地址(gmgn可点击)`
   - 交易信号触发记录（含触发信号名和评分）
 - 命中信号后，将结果 webhook 到 `BOT_WEBHOOK_URL`（自动交易机器人服务器）。
 

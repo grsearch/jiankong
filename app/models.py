@@ -17,6 +17,9 @@ class TokenProfile:
     fdv_or_mcap: float | None = None
     holders: int | None = None
     volume_24h: float | None = None
+    holders_source: str | None = None
+    holders_path: str | None = None
+    holders_refreshed_at: datetime | None = None
     created_at: datetime = field(default_factory=lambda: datetime.now(tz=timezone.utc))
 
 

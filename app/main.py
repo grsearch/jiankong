@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from datetime import datetime, timezone
 
@@ -16,6 +17,9 @@ from app.signal_engine import SignalEngine
 from app.state import STATE
 
 load_dotenv()
+logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+logger = logging.getLogger("sol-meme-monitor")
+
 app = FastAPI(title="Sol Meme Monitor")
 engine = SignalEngine()
 birdeye, helius = load_clients()
@@ -45,20 +49,92 @@ async def index() -> FileResponse:
     return FileResponse("static/index.html")
 
 
+async def resolve_holders(mint: str, metrics: dict) -> tuple[int | None, str, dict]:
+    birdeye_holders = metrics.get("holders")
+    birdeye_path = metrics.get("holders_path")
+
+    # 如果 Birdeye 返回明显异常的小值（常见误字段为1），尝试 Helius 校正。
+    if birdeye_holders is not None and birdeye_holders > 1:
+        return birdeye_holders, "birdeye", {"holders_path": birdeye_path}
+
+    helius_holders, helius_stats = await helius.get_holder_estimate(mint)
+
+    if birdeye_holders is None and helius_holders is None:
+        return None, "unknown", {"holders_path": birdeye_path, **helius_stats}
+
+    if birdeye_holders is None:
+        return helius_holders, "helius_estimated", {"holders_path": birdeye_path, **helius_stats}
+
+    if helius_holders is None:
+        return birdeye_holders, "birdeye", {"holders_path": birdeye_path, **helius_stats}
+
+    # 两者都存在时取更可信的较大值，并标记混合来源。
+    if helius_holders > birdeye_holders:
+        return helius_holders, "helius_estimated", {"holders_path": birdeye_path, **helius_stats}
+    return birdeye_holders, "birdeye", {"holders_path": birdeye_path, **helius_stats}
+
+
 @app.post("/webhook/token")
 async def token_webhook(payload: TokenWebhook) -> dict:
     token = TokenProfile(mint=payload.mint, symbol=payload.symbol)
     runtime = STATE.whitelist_token(token)
 
     metrics = await birdeye.get_token_metrics(payload.mint)
-    holders = metrics.get("holders") or await helius.get_holder_estimate(payload.mint)
+    holders, source, debug = await resolve_holders(payload.mint, metrics)
 
     runtime.profile.fdv_or_mcap = metrics.get("fdv") or metrics.get("mcap")
     runtime.profile.volume_24h = metrics.get("volume_24h")
     runtime.profile.holders = holders
+    runtime.profile.holders_source = source
+    runtime.profile.holders_path = debug.get("holders_path")
+    runtime.profile.holders_refreshed_at = datetime.now(timezone.utc)
+
+    logger.info(
+        "[holders] final mint=%s holders=%s source=%s path=%s pages=%s accounts=%s owners=%s",
+        payload.mint,
+        holders,
+        source,
+        runtime.profile.holders_path,
+        debug.get("pages"),
+        debug.get("accounts"),
+        debug.get("owners"),
+    )
 
     await STATE.broadcast({"type": "token", "mint": payload.mint})
-    return {"ok": True, "mint": payload.mint}
+    return {"ok": True, "mint": payload.mint, "holders": holders, "holders_source": source}
+
+
+@app.post("/webhook/refresh-holders")
+async def refresh_holders() -> dict:
+    updated = 0
+    for runtime in STATE.tokens.values():
+        metrics = await birdeye.get_token_metrics(runtime.profile.mint)
+        holders, source, debug = await resolve_holders(runtime.profile.mint, metrics)
+        runtime.profile.holders = holders
+        runtime.profile.holders_source = source
+        runtime.profile.holders_path = debug.get("holders_path")
+        runtime.profile.holders_refreshed_at = datetime.now(timezone.utc)
+        updated += 1
+    await STATE.broadcast({"type": "refresh", "count": updated})
+    return {"ok": True, "updated": updated}
+
+
+@app.get("/api/debug/token/{mint}")
+async def api_debug_token(mint: str) -> dict:
+    runtime = STATE.tokens.get(mint)
+    if not runtime:
+        return {"ok": False, "message": "token not found"}
+    return {
+        "ok": True,
+        "mint": mint,
+        "symbol": runtime.profile.symbol,
+        "holders": runtime.profile.holders,
+        "holders_source": runtime.profile.holders_source,
+        "holders_path": runtime.profile.holders_path,
+        "holders_refreshed_at": runtime.profile.holders_refreshed_at.isoformat()
+        if runtime.profile.holders_refreshed_at
+        else None,
+    }
 
 
 @app.post("/webhook/trade")
@@ -120,6 +196,7 @@ async def api_whitelist() -> list[dict]:
                 "mint": rt.profile.mint,
                 "fdv_or_mcap": rt.profile.fdv_or_mcap,
                 "holders": rt.profile.holders,
+                "holders_source": rt.profile.holders_source,
                 "volume": rt.profile.volume_24h,
                 "gmgn": f"https://gmgn.ai/sol/token/{rt.profile.mint}",
             }
