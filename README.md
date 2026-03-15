@@ -6,7 +6,7 @@
 
 - `POST /webhook/token`：接收新代币，加入白名单。
 - `POST /webhook/trade`：接收成交事件，计算 8 大核心信号与组合信号。
-- Holders 优先读取 Birdeye（支持嵌套路径解析），若为缺失/可疑小值（如 1）则回退 Helius `getTokenAccounts` 分页去重 owner 估算。
+- Holders 优先读取 Birdeye `/defi/v3/token/holder` 快照总量（更准确），其次回退 `token_overview`，最后才回退 Helius `getTokenAccounts` 分页去重 owner 估算。
 - `POST /webhook/refresh-holders`：对白名单做一次强制 holders 刷新（默认后台执行；`?sync=true` 可同步等待）。
 - `AUTO_REFRESH_HOLDERS_ON_START=true` 时，服务启动后会自动执行一次 holders 刷新（后台任务，避免阻塞启动）。
 - `TOKEN_ENRICH_BACKGROUND=true`（默认）时，`/webhook/token` 不阻塞等待第三方接口，先入白名单再后台补全。
@@ -70,3 +70,24 @@ curl -X POST http://127.0.0.1:8000/webhook/trade \
 - `TOKEN_ENRICH_TIMEOUT_S=15`：单币富化超时保护。
 - `HOLDER_REFRESH_CONCURRENCY=5`：批量刷新并发上限。
 - `HELIUS_MAX_PAGES=5`：限制回退分页深度，防止长时间等待。
+
+## Node.js Holders 监控（按你给的方案）
+
+如果你要单独验证 Birdeye holders，可直接使用：`scripts/birdeye-holders-monitor.js`。
+
+安装依赖：
+
+```bash
+npm i ws axios dotenv
+```
+
+运行：
+
+```bash
+BIRDEYE_API_KEY=xxx TOKEN_MINT=So11111111111111111111111111111111111111112 node scripts/birdeye-holders-monitor.js
+```
+
+该脚本会：
+- 使用 WebSocket `SUBSCRIBE_TOKEN_STATS` 监听 token stats。
+- holder 变化或定时触发时，调用 `/defi/v3/token/holder` 拉 top holders 快照。
+- 每 5 分钟调用 `/holder/v1/distribution` 输出筹码分布快照。

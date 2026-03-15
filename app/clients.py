@@ -14,7 +14,7 @@ class BirdeyeClient:
             return {}
         import httpx
 
-        headers = {"X-API-KEY": self.api_key, "x-chain": "solana"}
+        headers = {"X-API-KEY": self.api_key, "x-chain": "solana", "accept": "application/json"}
         timeout = httpx.Timeout(timeout=6.0, connect=2.0)
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
@@ -22,12 +22,24 @@ class BirdeyeClient:
                 overview_resp = await client.get(
                     f"{self.base}/defi/token_overview", headers=headers, params={"address": mint}
                 )
+                holder_resp = await client.get(
+                    f"{self.base}/defi/v3/token/holder",
+                    headers=headers,
+                    params={"address": mint, "offset": 0, "limit": 20},
+                )
         except httpx.HTTPError:
             return {}
 
         price_data = price_resp.json().get("data", {}) if price_resp.status_code == 200 else {}
         overview_data = overview_resp.json().get("data", {}) if overview_resp.status_code == 200 else {}
-        holders, holders_path = self._extract_holders_from_overview(overview_data)
+        holder_payload = holder_resp.json() if holder_resp.status_code == 200 else {}
+
+        holder_v3_count, holder_v3_path = self._extract_holders_from_holder_snapshot(holder_payload)
+        overview_count, overview_path = self._extract_holders_from_overview(overview_data)
+
+        holders = holder_v3_count if holder_v3_count is not None else overview_count
+        holders_path = holder_v3_path if holder_v3_path is not None else overview_path
+
         return {
             "price": price_data.get("value"),
             "fdv": overview_data.get("fdv"),
@@ -62,6 +74,26 @@ class BirdeyeClient:
             return None, None
 
         return walk(overview_data, "data")
+
+    @classmethod
+    def _extract_holders_from_holder_snapshot(cls, payload: dict[str, Any]) -> tuple[int | None, str | None]:
+        result = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(result, dict):
+            result = payload if isinstance(payload, dict) else {}
+
+        for key in ("total", "totalHolders", "holders", "holderCount", "holdersCount"):
+            parsed = cls._parse_positive_int(result.get(key))
+            if parsed is not None:
+                return parsed, f"data.{key}"
+
+        nested = result.get("page") if isinstance(result.get("page"), dict) else None
+        if nested:
+            for key in ("total", "total_items", "totalItems"):
+                parsed = cls._parse_positive_int(nested.get(key))
+                if parsed is not None:
+                    return parsed, f"data.page.{key}"
+
+        return None, None
 
     @staticmethod
     def _parse_positive_int(value: Any) -> int | None:

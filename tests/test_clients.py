@@ -13,6 +13,20 @@ def test_birdeye_extract_holders_supports_nested_paths():
     assert nested_path == "data.tokenOverview.holderCount"
 
 
+def test_birdeye_v3_holder_snapshot_count_priority():
+    value, path = BirdeyeClient._extract_holders_from_holder_snapshot({"data": {"total": "3210", "items": []}})
+    assert value == 3210
+    assert path == "data.total"
+
+
+def test_birdeye_v3_holder_snapshot_supports_page_total():
+    value, path = BirdeyeClient._extract_holders_from_holder_snapshot(
+        {"data": {"page": {"total_items": 998}, "items": []}}
+    )
+    assert value == 998
+    assert path == "data.page.total_items"
+
+
 def test_birdeye_ignores_ambiguous_holder_field():
     value, path = BirdeyeClient._extract_holders_from_overview({"holder": 1})
     assert value is None
